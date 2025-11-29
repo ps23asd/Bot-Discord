@@ -1,6 +1,7 @@
 import json
 import os
 import aiofiles
+import asyncio
 from datetime import datetime
 from typing import Optional, Dict, List, Any
 
@@ -82,7 +83,6 @@ class Database:
         try:
             data = await self.load_json(self.accounts_file)
             
-            # التأكد من وجود المفاتيح
             if 'accounts' not in data:
                 data['accounts'] = []
             if 'backup' not in data:
@@ -179,7 +179,6 @@ class Database:
         try:
             data = await self.load_json(self.tickets_file)
             
-            # التأكد من وجود المفاتيح
             if 'tickets' not in data:
                 data['tickets'] = []
             if 'closed_tickets' not in data:
@@ -257,7 +256,6 @@ class Database:
         try:
             data = await self.load_json(self.stats_file)
             
-            # التأكد من وجود المفاتيح
             if 'total_sales' not in data:
                 data['total_sales'] = 0
             if 'total_revenue' not in data:
@@ -310,7 +308,6 @@ class Database:
         try:
             data = await self.load_json(self.stats_file)
             
-            # التأكد من وجود كل المفاتيح
             default_stats = {
                 "total_sales": 0,
                 "total_revenue": 0,
@@ -352,4 +349,4 @@ class Database:
             print(f"❌ Error resetting stats: {e}")
 
 # إنشاء instance واحدة
-db = Database() 
+db = Database()
