@@ -1,5 +1,5 @@
 import discord
-from discord.ext import commands
+from discord.ext import commands, tasks
 from discord import app_commands, ui
 import asyncio
 import os
@@ -56,13 +56,15 @@ class Database:
         self.accounts_file = f"{DATA_DIR}/accounts.json"
         self.tickets_file = f"{DATA_DIR}/tickets.json"
         self.stats_file = f"{DATA_DIR}/stats.json"
+        self.config_file = f"{DATA_DIR}/config.json"
         self._init_files()
     
     def _init_files(self):
         defaults = {
             self.accounts_file: {"accounts": [], "backup": []},
             self.tickets_file: {"tickets": [], "closed_tickets": []},
-            self.stats_file: {"total_sales": 0, "total_revenue": 0, "accounts_sold": [], "daily_stats": {}, "seller_stats": {}, "rank_stats": {}}
+            self.stats_file: {"total_sales": 0, "total_revenue": 0, "accounts_sold": [], "daily_stats": {}, "seller_stats": {}, "rank_stats": {}},
+            self.config_file: {"stats_channel_id": None, "stats_message_id": None}
         }
         for path, data in defaults.items():
             if not os.path.exists(path):
@@ -174,6 +176,20 @@ class Database:
         data['daily_stats'][today]['sales'] += 1
         data['daily_stats'][today]['revenue'] += sale_data.get('price', 0)
         
+        seller = sale_data.get('seller', 'Unknown')
+        if 'seller_stats' not in data: data['seller_stats'] = {}
+        if seller not in data['seller_stats']:
+            data['seller_stats'][seller] = {'sales': 0, 'revenue': 0}
+        data['seller_stats'][seller]['sales'] += 1
+        data['seller_stats'][seller]['revenue'] += sale_data.get('price', 0)
+        
+        rank = sale_data.get('rank', 'Unknown')
+        if 'rank_stats' not in data: data['rank_stats'] = {}
+        if rank not in data['rank_stats']:
+            data['rank_stats'][rank] = {'sales': 0, 'revenue': 0}
+        data['rank_stats'][rank]['sales'] += 1
+        data['rank_stats'][rank]['revenue'] += sale_data.get('price', 0)
+        
         await self.save_json(self.stats_file, data)
     
     async def get_stats(self):
@@ -186,10 +202,138 @@ class Database:
             "seller_stats": data.get("seller_stats", {}),
             "rank_stats": data.get("rank_stats", {})
         }
+    
+    async def get_config(self):
+        return await self.load_json(self.config_file)
+    
+    async def save_config(self, config):
+        await self.save_json(self.config_file, config)
 
 db = Database()
 
+# ============ STATS FUNCTIONS ============
+async def create_stats_embed():
+    stats = await db.get_stats()
+    accounts = await db.get_all_accounts()
+    
+    finished = len([a for a in accounts if a.get('status') == 'finished'])
+    not_finished = len([a for a in accounts if a.get('status') == 'not_finished'])
+    
+    today = datetime.now().strftime('%Y-%m-%d')
+    daily = stats.get('daily_stats', {}).get(today, {'sales': 0, 'revenue': 0})
+    
+    e = discord.Embed(
+        title="📊 إحصائيات النظام",
+        description="*اضغط 🔄 للتحديث*",
+        color=COLORS['purple'],
+        timestamp=discord.utils.utcnow()
+    )
+    
+    e.add_field(
+        name="💰 المبيعات",
+        value=f"```yaml\n"
+              f"الإجمالي: {stats.get('total_sales', 0)}\n"
+              f"الأرباح: {stats.get('total_revenue', 0):,.0f} ج\n"
+              f"المتوسط: {stats.get('total_revenue', 0) / max(stats.get('total_sales', 1), 1):,.0f} ج\n"
+              f"```",
+        inline=True
+    )
+    
+    e.add_field(
+        name="🎮 الحسابات",
+        value=f"```yaml\n"
+              f"الكل: {len(accounts)}\n"
+              f"مكتمل ✅: {finished}\n"
+              f"جاري ⏳: {not_finished}\n"
+              f"```",
+        inline=True
+    )
+    
+    e.add_field(
+        name="📅 اليوم",
+        value=f"```yaml\n"
+              f"المبيعات: {daily.get('sales', 0)}\n"
+              f"الأرباح: {daily.get('revenue', 0):,.0f} ج\n"
+              f"```",
+        inline=True
+    )
+    
+    seller_stats = stats.get('seller_stats', {})
+    if seller_stats:
+        top_sellers = sorted(seller_stats.items(), key=lambda x: x[1]['sales'], reverse=True)[:5]
+        sellers_text = "\n".join([f"{i+1}. {s[0]}: {s[1]['sales']}" for i, s in enumerate(top_sellers)])
+    else:
+        sellers_text = "لا يوجد"
+    e.add_field(name="🏆 أفضل البائعين", value=f"```\n{sellers_text}\n```", inline=True)
+    
+    rank_stats = stats.get('rank_stats', {})
+    if rank_stats:
+        top_ranks = sorted(rank_stats.items(), key=lambda x: x[1]['sales'], reverse=True)[:5]
+        ranks_text = "\n".join([f"{i+1}. {r[0]}: {r[1]['sales']}" for i, r in enumerate(top_ranks)])
+    else:
+        ranks_text = "لا يوجد"
+    e.add_field(name="📊 أكثر الرانكات", value=f"```\n{ranks_text}\n```", inline=True)
+    
+    last_sales = stats.get('accounts_sold', [])[-5:][::-1]
+    if last_sales:
+        sales_text = "\n".join([f"• {s.get('rank', '?')}: {s.get('price', 0):,.0f} ج" for s in last_sales])
+    else:
+        sales_text = "لا يوجد"
+    e.add_field(name="🛒 آخر المبيعات", value=f"```\n{sales_text}\n```", inline=False)
+    
+    e.set_footer(text="🔄 آخر تحديث")
+    
+    return e
+
+async def update_stats_message(guild):
+    try:
+        config = await db.get_config()
+        channel_id = config.get('stats_channel_id')
+        message_id = config.get('stats_message_id')
+        
+        if channel_id and message_id:
+            channel = guild.get_channel(channel_id)
+            if channel:
+                try:
+                    message = await channel.fetch_message(message_id)
+                    embed = await create_stats_embed()
+                    await message.edit(embed=embed, view=StatsView())
+                    print(f"📊 Stats updated at {datetime.now().strftime('%H:%M:%S')}")
+                    return True
+                except discord.NotFound:
+                    pass
+        
+        channel = discord.utils.get(guild.text_channels, name="📊│احصائيات")
+        if channel:
+            async for msg in channel.history(limit=10):
+                if msg.author == guild.me:
+                    await msg.delete()
+            
+            embed = await create_stats_embed()
+            new_msg = await channel.send(embed=embed, view=StatsView())
+            
+            await db.save_config({
+                'stats_channel_id': channel.id,
+                'stats_message_id': new_msg.id
+            })
+            return True
+    except Exception as e:
+        print(f"❌ Stats update error: {e}")
+    return False
+
 # ============ VIEWS ============
+
+# --- Stats View with Refresh Button ---
+class StatsView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=None)
+    
+    @ui.button(label="🔄 تحديث", style=discord.ButtonStyle.primary, custom_id="refresh_stats")
+    async def refresh(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.defer()
+        embed = await create_stats_embed()
+        await interaction.message.edit(embed=embed, view=self)
+        await interaction.followup.send("✅ تم التحديث!", ephemeral=True)
 
 # --- Ticket Views ---
 class RankCategorySelect(ui.Select):
@@ -203,7 +347,11 @@ class RankCategorySelect(ui.Select):
     async def callback(self, interaction: discord.Interaction):
         cat = self.values[0]
         view = RankLevelView(cat)
-        embed = discord.Embed(title=f"{RANK_EMOJIS.get(cat, '🎮')} {cat}", description="اختر المستوى:", color=COLORS['info'])
+        embed = discord.Embed(
+            title=f"{RANK_EMOJIS.get(cat, '🎮')} {cat}",
+            description="اختر المستوى من القائمة أدناه\nأو اضغط 🔙 للرجوع",
+            color=COLORS['info']
+        )
         await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
 class RankLevelSelect(ui.Select):
@@ -218,8 +366,48 @@ class RankLevelSelect(ui.Select):
 
 class RankLevelView(ui.View):
     def __init__(self, category):
-        super().__init__(timeout=60)
+        super().__init__(timeout=120)
+        self.category = category
         self.add_item(RankLevelSelect(category))
+    
+    @ui.button(label="🔙 رجوع", style=discord.ButtonStyle.secondary, row=1)
+    async def back(self, interaction: discord.Interaction, button: ui.Button):
+        embed = discord.Embed(
+            title="🎫 نظام التذاكر",
+            description="اختر فئة الرانك من القائمة",
+            color=COLORS['purple']
+        )
+        await interaction.response.edit_message(embed=embed, view=RankSelectView())
+    
+    @ui.button(label="❌ إلغاء", style=discord.ButtonStyle.danger, row=1)
+    async def cancel(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.edit_message(content="❌ تم الإلغاء", embed=None, view=None, delete_after=3)
+
+class RankSelectView(ui.View):
+    def __init__(self):
+        super().__init__(timeout=120)
+        self.add_item(RankCategorySelectNew())
+    
+    @ui.button(label="❌ إلغاء", style=discord.ButtonStyle.danger, row=1)
+    async def cancel(self, interaction: discord.Interaction, button: ui.Button):
+        await interaction.response.edit_message(content="❌ تم الإلغاء", embed=None, view=None, delete_after=3)
+
+class RankCategorySelectNew(ui.Select):
+    def __init__(self):
+        options = [
+            discord.SelectOption(label=cat, value=cat, emoji=RANK_EMOJIS.get(cat, "🎮"))
+            for cat in list(RANK_CATEGORIES.keys())[:25]
+        ]
+        super().__init__(placeholder="🎯 اختر فئة الرانك...", options=options, custom_id="rank_cat_new")
+    
+    async def callback(self, interaction: discord.Interaction):
+        cat = self.values[0]
+        embed = discord.Embed(
+            title=f"{RANK_EMOJIS.get(cat, '🎮')} {cat}",
+            description="اختر المستوى من القائمة أدناه\nأو اضغط 🔙 للرجوع",
+            color=COLORS['info']
+        )
+        await interaction.response.edit_message(embed=embed, view=RankLevelView(cat))
 
 class TicketPanelView(ui.View):
     def __init__(self):
@@ -281,7 +469,12 @@ class TicketControlView(ui.View):
     
     @ui.button(label="✅ تم البيع", style=discord.ButtonStyle.success, custom_id="ticket_sold")
     async def sold(self, interaction: discord.Interaction, button: ui.Button):
-        await interaction.response.send_modal(SoldModal())
+        rank = "Unknown"
+        if "│" in interaction.channel.name:
+            parts = interaction.channel.name.split("│")
+            if len(parts) >= 2:
+                rank = parts[1].replace("-", " ")
+        await interaction.response.send_modal(SoldModal(rank))
     
     @ui.button(label="🔒 إغلاق", style=discord.ButtonStyle.danger, custom_id="ticket_close")
     async def close(self, interaction: discord.Interaction, button: ui.Button):
@@ -290,6 +483,10 @@ class TicketControlView(ui.View):
         await interaction.channel.delete()
 
 class SoldModal(ui.Modal, title="💰 معلومات البيع"):
+    def __init__(self, rank="Unknown"):
+        super().__init__()
+        self.rank = rank
+    
     buyer = ui.TextInput(label="اسم المشتري", required=True)
     price = ui.TextInput(label="السعر", required=True)
     
@@ -300,7 +497,12 @@ class SoldModal(ui.Modal, title="💰 معلومات البيع"):
             await interaction.response.send_message("❌ السعر لازم رقم!", ephemeral=True)
             return
         
-        await db.add_sale({'buyer': self.buyer.value, 'price': price, 'seller': interaction.user.name})
+        await db.add_sale({
+            'buyer': self.buyer.value, 
+            'price': price, 
+            'seller': interaction.user.name,
+            'rank': self.rank
+        })
         
         waiting_cat = discord.utils.get(interaction.guild.categories, name="💰 انتظار الفلوس")
         if not waiting_cat:
@@ -312,8 +514,10 @@ class SoldModal(ui.Modal, title="💰 معلومات البيع"):
         embed.add_field(name="👤 المشتري", value=self.buyer.value, inline=True)
         embed.add_field(name="💵 السعر", value=f"{price} ج", inline=True)
         embed.add_field(name="🛒 البائع", value=interaction.user.mention, inline=True)
+        embed.add_field(name="🎮 الرانك", value=self.rank, inline=True)
         
         await interaction.response.send_message(embed=embed, view=WaitingMoneyView())
+        await update_stats_message(interaction.guild)
 
 class WaitingMoneyView(ui.View):
     def __init__(self):
@@ -368,7 +572,6 @@ class AccountInfoModal(ui.Modal, title="📝 إضافة حساب"):
             'status': 'finished' if level >= 15 else 'not_finished'
         })
         
-        # Backup
         backup_ch = discord.utils.get(interaction.guild.channels, name="🔒│backup-accounts")
         if backup_ch:
             be = discord.Embed(title=f"💾 Backup - {account_id}", color=COLORS['purple'])
@@ -378,7 +581,6 @@ class AccountInfoModal(ui.Modal, title="📝 إضافة حساب"):
             be.timestamp = discord.utils.utcnow()
             await backup_ch.send(embed=be)
         
-        # Target channel
         if level >= 15:
             target = discord.utils.get(interaction.guild.channels, name="✅│level-15-done")
             color = COLORS['success']
@@ -405,6 +607,8 @@ class AccountInfoModal(ui.Modal, title="📝 إضافة حساب"):
             await interaction.response.send_message(f"✅ تم إضافة الحساب! {target.mention}", ephemeral=True)
         else:
             await interaction.response.send_message("❌ القناة مش موجودة! استخدم `/setup_all`", ephemeral=True)
+        
+        await update_stats_message(interaction.guild)
 
 class AccountControlView(ui.View):
     def __init__(self, account_id="", is_done=False):
@@ -412,7 +616,6 @@ class AccountControlView(ui.View):
         self.account_id = account_id
         self.is_done = is_done
         
-        # Dynamic buttons
         if not is_done:
             move_btn = ui.Button(label="✅ نقل لـ Done", style=discord.ButtonStyle.success, custom_id=f"move_{account_id}")
             move_btn.callback = self.move_callback
@@ -457,6 +660,7 @@ class AccountControlView(ui.View):
             await done_ch.send(embed=embed, view=AccountControlView(acc_id, True))
             await interaction.response.send_message("✅ تم النقل!", ephemeral=True)
             await interaction.message.delete()
+            await update_stats_message(interaction.guild)
         else:
             await interaction.response.send_message("❌ القناة مش موجودة!", ephemeral=True)
     
@@ -491,6 +695,7 @@ class AccountControlView(ui.View):
             await db.delete_account(acc_id)
             await interaction.response.send_message("✅ تم الحذف!", ephemeral=True)
             await interaction.message.delete()
+            await update_stats_message(interaction.guild)
         else:
             await interaction.response.send_message("❌ Error!", ephemeral=True)
 
@@ -564,6 +769,7 @@ class DoneAccountModal(ui.Modal, title="📝 إضافة حساب مكتمل"):
         embed.timestamp = discord.utils.utcnow()
         
         await interaction.response.send_message(embed=embed, view=AccountControlView(account_id, True))
+        await update_stats_message(interaction.guild)
 
 # ============ BOT ============
 class MarvelBot(commands.Bot):
@@ -576,7 +782,6 @@ class MarvelBot(commands.Bot):
         super().__init__(command_prefix="!", intents=intents, help_command=None)
     
     async def setup_hook(self):
-        # Add views
         self.add_view(TicketPanelView())
         self.add_view(TicketControlView())
         self.add_view(WaitingMoneyView())
@@ -584,8 +789,8 @@ class MarvelBot(commands.Bot):
         self.add_view(Level15NotFinishView())
         self.add_view(Level15DoneView())
         self.add_view(AccountControlView())
+        self.add_view(StatsView())
         
-        # Sync commands
         if GUILD_ID:
             guild = discord.Object(id=GUILD_ID)
             self.tree.copy_global_to(guild=guild)
@@ -593,6 +798,8 @@ class MarvelBot(commands.Bot):
         else:
             synced = await self.tree.sync()
         print(f"✅ Synced {len(synced)} commands")
+        
+        self.auto_update_stats.start()
     
     async def on_ready(self):
         print(f"{'='*50}")
@@ -600,9 +807,22 @@ class MarvelBot(commands.Bot):
         print(f"🆔 ID: {self.user.id}")
         print(f"📊 Servers: {len(self.guilds)}")
         print(f"📝 Commands: {len(self.tree.get_commands())}")
+        print(f"🔄 Auto-update: Every 3 minutes")
         print(f"{'='*50}")
         
         await self.change_presence(activity=discord.Activity(type=discord.ActivityType.watching, name="Marvel Accounts 🎮"))
+        
+        for guild in self.guilds:
+            await update_stats_message(guild)
+    
+    @tasks.loop(minutes=3)
+    async def auto_update_stats(self):
+        for guild in self.guilds:
+            await update_stats_message(guild)
+    
+    @auto_update_stats.before_loop
+    async def before_auto_update(self):
+        await self.wait_until_ready()
 
 bot = MarvelBot()
 
@@ -682,16 +902,20 @@ async def setup_all(interaction: discord.Interaction):
     scat = discord.utils.get(guild.categories, name="📈 الإحصائيات")
     if not scat:
         scat = await guild.create_category("📈 الإحصائيات")
-    if not discord.utils.get(guild.text_channels, name="📊│احصائيات"):
-        ch = await guild.create_text_channel("📊│احصائيات", category=scat, overwrites=overwrites)
-        stats = await db.get_stats()
-        accounts = await db.get_all_accounts()
-        e = discord.Embed(title="📊 الإحصائيات", color=COLORS['purple'])
-        e.add_field(name="💰 المبيعات", value=str(stats.get('total_sales', 0)), inline=True)
-        e.add_field(name="💵 الأرباح", value=f"{stats.get('total_revenue', 0):,.0f} ج", inline=True)
-        e.add_field(name="🎮 الحسابات", value=str(len(accounts)), inline=True)
-        await ch.send(embed=e)
-    status.append("✅ Stats")
+    
+    old_stats = discord.utils.get(guild.text_channels, name="📊│احصائيات")
+    if old_stats:
+        await old_stats.delete()
+    
+    ch = await guild.create_text_channel("📊│احصائيات", category=scat, overwrites=overwrites)
+    embed = await create_stats_embed()
+    msg = await ch.send(embed=embed, view=StatsView())
+    
+    await db.save_config({
+        'stats_channel_id': ch.id,
+        'stats_message_id': msg.id
+    })
+    status.append("✅ Stats (with 🔄 button)")
     
     await interaction.followup.send(embed=discord.Embed(title="✅ تم!", description="\n".join(status), color=COLORS['success']))
 
@@ -714,16 +938,18 @@ async def clean_channels(interaction: discord.Interaction):
 
 @bot.tree.command(name="stats", description="الإحصائيات")
 async def stats(interaction: discord.Interaction):
-    stats = await db.get_stats()
-    accounts = await db.get_all_accounts()
-    
-    e = discord.Embed(title="📊 الإحصائيات", color=COLORS['purple'])
-    e.add_field(name="💰 المبيعات", value=str(stats.get('total_sales', 0)), inline=True)
-    e.add_field(name="💵 الأرباح", value=f"{stats.get('total_revenue', 0):,.0f} ج", inline=True)
-    e.add_field(name="🎮 الحسابات", value=str(len(accounts)), inline=True)
-    e.timestamp = discord.utils.utcnow()
-    
-    await interaction.response.send_message(embed=e, ephemeral=True)
+    embed = await create_stats_embed()
+    await interaction.response.send_message(embed=embed, view=StatsView(), ephemeral=True)
+
+@bot.tree.command(name="update_stats", description="تحديث الإحصائيات")
+@app_commands.default_permissions(administrator=True)
+async def update_stats_cmd(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    success = await update_stats_message(interaction.guild)
+    if success:
+        await interaction.followup.send("✅ تم التحديث!")
+    else:
+        await interaction.followup.send("❌ فشل! جرب `/setup_all`")
 
 @bot.tree.command(name="add_account", description="إضافة حساب")
 async def add_account(interaction: discord.Interaction):
@@ -755,6 +981,7 @@ async def bot_info(interaction: discord.Interaction):
     e.add_field(name="Name", value=bot.user.name, inline=True)
     e.add_field(name="Servers", value=str(len(bot.guilds)), inline=True)
     e.add_field(name="Latency", value=f"{round(bot.latency*1000)}ms", inline=True)
+    e.add_field(name="Auto-Update", value="كل 3 دقائق", inline=True)
     await interaction.response.send_message(embed=e, ephemeral=True)
 
 # ============ KEEP ALIVE ============
@@ -767,6 +994,10 @@ try:
     @app.route('/')
     def home():
         return "🤖 Bot is running!"
+    
+    @app.route('/health')
+    def health():
+        return {"status": "ok"}
     
     def run():
         app.run(host='0.0.0.0', port=8080)
