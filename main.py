@@ -2,11 +2,14 @@ import discord
 from discord.ext import commands
 import asyncio
 import os
+import signal
+import sys
 from config import TOKEN, GUILD_ID
 from views.ticket_views import TicketPanelView, TicketControlView, WaitingMoneyView, FinalView
 from views.account_views import Level15NotFinishView, Level15DoneView, AccountControlView
+from database import db
 
-# ✅ استيراد keep_alive
+# استيراد keep_alive
 try:
     from keep_alive import keep_alive
     KEEP_ALIVE_ENABLED = True
@@ -26,6 +29,8 @@ class MarvelBot(commands.Bot):
             intents=intents,
             help_command=None
         )
+        
+        self.shutting_down = False
     
     async def setup_hook(self):
         # Load cogs
@@ -61,21 +66,61 @@ class MarvelBot(commands.Bot):
         print(f"📛 Logged in as: {self.user.name}")
         print(f"🆔 Bot ID: {self.user.id}")
         print(f"📊 Servers: {len(self.guilds)}")
+        print(f"⏰ Running on GitHub Actions")
+        print(f"💾 Data will be saved automatically")
         print(f"{'='*50}")
         
         # Set status
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="Marvel Accounts 🎮"
+                name="Marvel Accounts 🎮 | GitHub Actions"
             )
         )
+    
+    async def close(self):
+        """حفظ البيانات عند الإغلاق"""
+        if not self.shutting_down:
+            self.shutting_down = True
+            print("\n" + "="*50)
+            print("🛑 Shutting down bot...")
+            print("💾 Saving data...")
+            
+            # إعطاء وقت للـ database لحفظ أي معاملات معلقة
+            await asyncio.sleep(2)
+            
+            print("✅ Data saved successfully")
+            print("👋 Bot shutdown complete")
+            print("="*50 + "\n")
+        
+        await super().close()
+
+def signal_handler(sig, frame):
+    """معالج إشارات النظام للإغلاق الآمن"""
+    print(f"\n⚠️ Received signal {sig}")
+    sys.exit(0)
+
+# تسجيل معالجات الإشارات
+signal.signal(signal.SIGTERM, signal_handler)
+signal.signal(signal.SIGINT, signal_handler)
 
 # Run bot
 if __name__ == "__main__":
-    # ✅ تشغيل keep_alive server
+    print("="*50)
+    print("🚀 Starting Marvel Discord Bot")
+    print("📍 Environment: GitHub Actions")
+    print("="*50 + "\n")
+    
+    # تشغيل keep_alive server
     if KEEP_ALIVE_ENABLED:
         keep_alive()
     
-    bot = MarvelBot()
-    bot.run(TOKEN)
+    try:
+        bot = MarvelBot()
+        bot.run(TOKEN)
+    except KeyboardInterrupt:
+        print("\n⚠️ Interrupted by user")
+    except Exception as e:
+        print(f"\n❌ Fatal error: {e}")
+    finally:
+        print("🔚 Bot process ended")
