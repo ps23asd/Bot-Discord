@@ -1,4 +1,4 @@
-name: Bot
+name: Discord Bot 24/7
 
 on:
   workflow_dispatch:
@@ -27,22 +27,69 @@ jobs:
 
       - run: mkdir -p data
 
-      - uses: actions/download-artifact@v4
+      - name: Download Previous Data
+        uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          name: data
+          name: bot-data
           path: data/
 
-      - name: Run
+      - name: Check Downloaded Data
+        run: |
+          echo "=== Data Files ==="
+          ls -lah data/ || echo "No data directory"
+          if [ -f "data/accounts.json" ]; then
+            echo "accounts.json size: $(wc -c < data/accounts.json) bytes"
+            echo "Content preview:"
+            head -n 20 data/accounts.json
+          fi
+          if [ -f "data/stats.json" ]; then
+            echo "stats.json size: $(wc -c < data/stats.json) bytes"
+          fi
+
+      - name: Run Bot
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           GUILD_ID: ${{ secrets.GUILD_ID }}
           ADMIN_ROLE_ID: ${{ secrets.ADMIN_ROLE_ID }}
-        run: timeout 19800 python main.py || true
+        run: |
+          echo "Starting bot..."
+          timeout 19800 python main.py || true
+          echo "Bot stopped"
 
-      - uses: actions/upload-artifact@v4
+      - name: Verify Data Before Upload
         if: always()
+        run: |
+          echo "=== Verifying Data Files ==="
+          ls -lah data/
+          if [ -f "data/accounts.json" ]; then
+            echo "✅ accounts.json exists ($(wc -c < data/accounts.json) bytes)"
+            cat data/accounts.json | head -n 20
+          else
+            echo "❌ accounts.json missing!"
+          fi
+          if [ -f "data/stats.json" ]; then
+            echo "✅ stats.json exists ($(wc -c < data/stats.json) bytes)"
+          fi
+          if [ -f "data/tickets.json" ]; then
+            echo "✅ tickets.json exists ($(wc -c < data/tickets.json) bytes)"
+          fi
+
+      - name: Upload Data
+        if: always()
+        uses: actions/upload-artifact@v4
         with:
-          name: data
+          name: bot-data
           path: data/
+          retention-days: 90
           overwrite: true
+          if-no-files-found: warn
+
+      - name: Upload Backup
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-data-backup-${{ github.run_number }}
+          path: data/
+          retention-days: 30
+          if-no-files-found: warn
