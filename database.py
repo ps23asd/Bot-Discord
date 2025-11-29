@@ -1,9 +1,8 @@
 import json
 import os
-import aiofiles
-import asyncio
 from datetime import datetime
-from typing import Optional, Dict, List, Any
+from typing import Optional, List
+import threading
 
 DATA_DIR = "data"
 
@@ -19,11 +18,13 @@ class Database:
         self.accounts_file = f"{DATA_DIR}/accounts.json"
         self.tickets_file = f"{DATA_DIR}/tickets.json"
         self.stats_file = f"{DATA_DIR}/stats.json"
+        self.config_file = f"{DATA_DIR}/config.json"
+        self.lock = threading.Lock()
         self._init_files()
     
     def _init_files(self):
         """إنشاء ملفات JSON الأساسية"""
-        files_config = {
+        defaults = {
             self.accounts_file: {
                 "accounts": [],
                 "backup": []
@@ -35,53 +36,93 @@ class Database:
             self.stats_file: {
                 "total_sales": 0,
                 "total_revenue": 0,
+                "total_purchase_cost": 0,
                 "accounts_sold": [],
+                "purchases": [],
                 "daily_stats": {},
                 "seller_stats": {},
                 "rank_stats": {}
+            },
+            self.config_file: {
+                "stats_channel_id": None,
+                "stats_message_id": None
             }
         }
         
-        for file_path, default_data in files_config.items():
+        for file_path, default_data in defaults.items():
             if not os.path.exists(file_path):
                 try:
-                    with open(file_path, 'w', encoding='utf-8') as f:
-                        json.dump(default_data, f, ensure_ascii=False, indent=4)
+                    self._write_file(file_path, default_data)
                     print(f"✅ Created file: {file_path}")
                 except Exception as e:
                     print(f"❌ Error creating {file_path}: {e}")
     
-    async def load_json(self, file_path: str) -> dict:
-        """تحميل بيانات JSON"""
-        try:
-            if not os.path.exists(file_path):
-                self._init_files()
-            
-            async with aiofiles.open(file_path, 'r', encoding='utf-8') as f:
-                content = await f.read()
-                if not content.strip():
-                    return {}
-                return json.loads(content)
-        except json.JSONDecodeError as e:
-            print(f"❌ JSON Error in {file_path}: {e}")
-            return {}
-        except Exception as e:
-            print(f"❌ Error loading {file_path}: {e}")
-            return {}
+    def _read_file(self, file_path: str) -> dict:
+        """قراءة ملف JSON بشكل متزامن"""
+        with self.lock:
+            try:
+                if not os.path.exists(file_path):
+                    print(f"⚠️ File not found: {file_path}, initializing...")
+                    self._init_files()
+                
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    print(f"📖 Read from {os.path.basename(file_path)}: {len(str(data))} chars")
+                    return data
+            except json.JSONDecodeError as e:
+                print(f"❌ JSON Error in {file_path}: {e}")
+                return {}
+            except Exception as e:
+                print(f"❌ Error reading {file_path}: {e}")
+                return {}
     
-    async def save_json(self, file_path: str, data: dict):
-        """حفظ بيانات JSON"""
-        try:
-            async with aiofiles.open(file_path, 'w', encoding='utf-8') as f:
-                await f.write(json.dumps(data, ensure_ascii=False, indent=4))
-        except Exception as e:
-            print(f"❌ Error saving {file_path}: {e}")
+    def _write_file(self, file_path: str, data: dict):
+        """كتابة ملف JSON بشكل متزامن مع التأكد من الحفظ"""
+        with self.lock:
+            try:
+                # Write to temp file first
+                temp_file = f"{file_path}.tmp"
+                
+                with open(temp_file, 'w', encoding='utf-8') as f:
+                    json.dump(data, f, ensure_ascii=False, indent=2)
+                    f.flush()  # Force write to disk
+                    os.fsync(f.fileno())  # Ensure data is written to disk
+                
+                # Replace original file
+                if os.path.exists(file_path):
+                    os.replace(temp_file, file_path)
+                else:
+                    os.rename(temp_file, file_path)
+                
+                # Verify write
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    verify = json.load(f)
+                    if verify != data:
+                        raise Exception("Data verification failed!")
+                
+                print(f"💾 Saved to {os.path.basename(file_path)}: {len(str(data))} chars")
+                
+            except Exception as e:
+                print(f"❌ Error writing {file_path}: {e}")
+                # Clean up temp file if exists
+                if os.path.exists(f"{file_path}.tmp"):
+                    os.remove(f"{file_path}.tmp")
+                raise
+    
+    # ============ Wrapper Functions for async compatibility ============
+    async def load_json(self, path: str) -> dict:
+        """Async wrapper for reading JSON"""
+        return self._read_file(path)
+    
+    async def save_json(self, path: str, data: dict):
+        """Async wrapper for writing JSON"""
+        self._write_file(path, data)
     
     # ============ Accounts Functions ============
     async def add_account(self, account_data: dict) -> str:
         """إضافة حساب جديد"""
         try:
-            data = await self.load_json(self.accounts_file)
+            data = self._read_file(self.accounts_file)
             
             if 'accounts' not in data:
                 data['accounts'] = []
@@ -96,7 +137,9 @@ class Database:
             data['accounts'].append(account_data)
             data['backup'].append(account_data.copy())
             
-            await self.save_json(self.accounts_file, data)
+            self._write_file(self.accounts_file, data)
+            print(f"✅ Added account: {account_id}")
+            
             return account_id
         except Exception as e:
             print(f"❌ Error adding account: {e}")
@@ -105,7 +148,7 @@ class Database:
     async def get_account(self, account_id: str) -> Optional[dict]:
         """الحصول على حساب بواسطة ID"""
         try:
-            data = await self.load_json(self.accounts_file)
+            data = self._read_file(self.accounts_file)
             accounts = data.get('accounts', [])
             
             for acc in accounts:
@@ -119,7 +162,7 @@ class Database:
     async def update_account(self, account_id: str, updates: dict) -> bool:
         """تحديث بيانات حساب"""
         try:
-            data = await self.load_json(self.accounts_file)
+            data = self._read_file(self.accounts_file)
             accounts = data.get('accounts', [])
             
             for i, acc in enumerate(accounts):
@@ -127,7 +170,8 @@ class Database:
                     accounts[i].update(updates)
                     accounts[i]['updated_at'] = datetime.now().isoformat()
                     data['accounts'] = accounts
-                    await self.save_json(self.accounts_file, data)
+                    self._write_file(self.accounts_file, data)
+                    print(f"✅ Updated account: {account_id}")
                     return True
             return False
         except Exception as e:
@@ -137,14 +181,15 @@ class Database:
     async def delete_account(self, account_id: str) -> bool:
         """حذف حساب"""
         try:
-            data = await self.load_json(self.accounts_file)
+            data = self._read_file(self.accounts_file)
             accounts = data.get('accounts', [])
             
             for i, acc in enumerate(accounts):
                 if acc.get('id') == account_id:
                     del accounts[i]
                     data['accounts'] = accounts
-                    await self.save_json(self.accounts_file, data)
+                    self._write_file(self.accounts_file, data)
+                    print(f"✅ Deleted account: {account_id}")
                     return True
             return False
         except Exception as e:
@@ -154,7 +199,7 @@ class Database:
     async def get_all_accounts(self, status: str = None) -> List[dict]:
         """الحصول على جميع الحسابات"""
         try:
-            data = await self.load_json(self.accounts_file)
+            data = self._read_file(self.accounts_file)
             accounts = data.get('accounts', [])
             
             if status:
@@ -167,7 +212,7 @@ class Database:
     async def get_backup_accounts(self) -> List[dict]:
         """الحصول على النسخ الاحتياطية"""
         try:
-            data = await self.load_json(self.accounts_file)
+            data = self._read_file(self.accounts_file)
             return data.get('backup', [])
         except Exception as e:
             print(f"❌ Error getting backup accounts: {e}")
@@ -177,7 +222,7 @@ class Database:
     async def create_ticket(self, ticket_data: dict) -> str:
         """إنشاء تذكرة جديدة"""
         try:
-            data = await self.load_json(self.tickets_file)
+            data = self._read_file(self.tickets_file)
             
             if 'tickets' not in data:
                 data['tickets'] = []
@@ -190,7 +235,9 @@ class Database:
             ticket_data['status'] = 'open'
             
             data['tickets'].append(ticket_data)
-            await self.save_json(self.tickets_file, data)
+            self._write_file(self.tickets_file, data)
+            print(f"✅ Created ticket: {ticket_id}")
+            
             return ticket_id
         except Exception as e:
             print(f"❌ Error creating ticket: {e}")
@@ -199,7 +246,7 @@ class Database:
     async def get_ticket(self, ticket_id: str) -> Optional[dict]:
         """الحصول على تذكرة بواسطة ID"""
         try:
-            data = await self.load_json(self.tickets_file)
+            data = self._read_file(self.tickets_file)
             tickets = data.get('tickets', [])
             
             for ticket in tickets:
@@ -213,14 +260,15 @@ class Database:
     async def update_ticket(self, ticket_id: str, updates: dict) -> bool:
         """تحديث بيانات تذكرة"""
         try:
-            data = await self.load_json(self.tickets_file)
+            data = self._read_file(self.tickets_file)
             tickets = data.get('tickets', [])
             
             for i, ticket in enumerate(tickets):
                 if ticket.get('id') == ticket_id:
                     tickets[i].update(updates)
                     data['tickets'] = tickets
-                    await self.save_json(self.tickets_file, data)
+                    self._write_file(self.tickets_file, data)
+                    print(f"✅ Updated ticket: {ticket_id}")
                     return True
             return False
         except Exception as e:
@@ -230,7 +278,7 @@ class Database:
     async def close_ticket(self, ticket_id: str, close_data: dict) -> bool:
         """إغلاق تذكرة"""
         try:
-            data = await self.load_json(self.tickets_file)
+            data = self._read_file(self.tickets_file)
             tickets = data.get('tickets', [])
             closed_tickets = data.get('closed_tickets', [])
             
@@ -243,7 +291,8 @@ class Database:
                     
                     data['tickets'] = tickets
                     data['closed_tickets'] = closed_tickets
-                    await self.save_json(self.tickets_file, data)
+                    self._write_file(self.tickets_file, data)
+                    print(f"✅ Closed ticket: {ticket_id}")
                     return True
             return False
         except Exception as e:
@@ -254,8 +303,9 @@ class Database:
     async def add_sale(self, sale_data: dict):
         """إضافة عملية بيع للإحصائيات"""
         try:
-            data = await self.load_json(self.stats_file)
+            data = self._read_file(self.stats_file)
             
+            # Ensure all keys exist
             if 'total_sales' not in data:
                 data['total_sales'] = 0
             if 'total_revenue' not in data:
@@ -299,19 +349,52 @@ class Database:
             data['rank_stats'][rank]['sales'] += 1
             data['rank_stats'][rank]['revenue'] += sale_data.get('price', 0)
             
-            await self.save_json(self.stats_file, data)
+            self._write_file(self.stats_file, data)
+            print(f"✅ Added sale: {sale_data.get('price', 0)} ج from {seller}")
+            
         except Exception as e:
             print(f"❌ Error adding sale: {e}")
+    
+    async def add_purchase(self, purchase_data: dict) -> str:
+        """إضافة عملية شراء حسابات"""
+        try:
+            data = self._read_file(self.stats_file)
+            
+            if 'purchases' not in data:
+                data['purchases'] = []
+            if 'total_purchase_cost' not in data:
+                data['total_purchase_cost'] = 0
+            
+            purchase_id = f"PUR-{len(data['purchases']) + 1:04d}"
+            purchase_record = {
+                'id': purchase_id,
+                **purchase_data,
+                'date': datetime.now().isoformat()
+            }
+            
+            data['purchases'].append(purchase_record)
+            data['total_purchase_cost'] += purchase_data.get('cost', 0)
+            
+            self._write_file(self.stats_file, data)
+            print(f"✅ Added purchase: {purchase_id} - {purchase_data.get('cost', 0)} ج")
+            
+            return purchase_id
+        except Exception as e:
+            print(f"❌ Error adding purchase: {e}")
+            return "ERROR"
     
     async def get_stats(self) -> dict:
         """الحصول على الإحصائيات"""
         try:
-            data = await self.load_json(self.stats_file)
+            data = self._read_file(self.stats_file)
             
+            # Ensure all required keys exist
             default_stats = {
                 "total_sales": 0,
                 "total_revenue": 0,
+                "total_purchase_cost": 0,
                 "accounts_sold": [],
+                "purchases": [],
                 "daily_stats": {},
                 "seller_stats": {},
                 "rank_stats": {}
@@ -327,26 +410,30 @@ class Database:
             return {
                 "total_sales": 0,
                 "total_revenue": 0,
+                "total_purchase_cost": 0,
                 "accounts_sold": [],
+                "purchases": [],
                 "daily_stats": {},
                 "seller_stats": {},
                 "rank_stats": {}
             }
     
-    async def reset_stats(self):
-        """إعادة تعيين الإحصائيات"""
+    async def get_config(self) -> dict:
+        """الحصول على الإعدادات"""
         try:
-            default_stats = {
-                "total_sales": 0,
-                "total_revenue": 0,
-                "accounts_sold": [],
-                "daily_stats": {},
-                "seller_stats": {},
-                "rank_stats": {}
-            }
-            await self.save_json(self.stats_file, default_stats)
+            data = self._read_file(self.config_file)
+            return data
         except Exception as e:
-            print(f"❌ Error resetting stats: {e}")
+            print(f"❌ Error getting config: {e}")
+            return {}
+    
+    async def save_config(self, config: dict):
+        """حفظ الإعدادات"""
+        try:
+            self._write_file(self.config_file, config)
+            print(f"✅ Saved config")
+        except Exception as e:
+            print(f"❌ Error saving config: {e}")
 
-# إنشاء instance واحدة
+# Create singleton instance
 db = Database()
