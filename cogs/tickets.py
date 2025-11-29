@@ -1,9 +1,6 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-from config import COLORS, ADMIN_ROLE_ID
-from database import db
-from views.ticket_views import TicketPanelView
 
 class TicketsCog(commands.Cog):
     def __init__(self, bot):
@@ -14,51 +11,37 @@ class TicketsCog(commands.Cog):
     async def setup_tickets(self, interaction: discord.Interaction):
         await interaction.response.defer(ephemeral=True)
         
-        guild = interaction.guild
-        
         try:
-            # Create categories
-            for cat_name in ["🎫 التذاكر", "💰 انتظار الفلوس", "✅ تم تسليم الفلوس"]:
-                if not discord.utils.get(guild.categories, name=cat_name):
-                    await guild.create_category(cat_name)
+            from views.ticket_views import TicketPanelView
             
-            tickets_category = discord.utils.get(guild.categories, name="🎫 التذاكر")
-            
+            guild = interaction.guild
             overwrites = {
                 guild.default_role: discord.PermissionOverwrite(read_messages=True, send_messages=False),
                 guild.me: discord.PermissionOverwrite(read_messages=True, send_messages=True)
             }
             
-            # Create ticket panel
+            for n in ["🎫 التذاكر", "💰 انتظار الفلوس", "✅ تم تسليم الفلوس"]:
+                if not discord.utils.get(guild.categories, name=n):
+                    await guild.create_category(n)
+            
+            cat = discord.utils.get(guild.categories, name="🎫 التذاكر")
+            
             if not discord.utils.get(guild.text_channels, name="🎫│فتح-تذكرة"):
-                panel = await guild.create_text_channel("🎫│فتح-تذكرة", category=tickets_category, overwrites=overwrites)
-                
-                embed = discord.Embed(
-                    title="🎫 نظام التذاكر",
-                    description="اختر رانك الحساب من القائمة لفتح تذكرة جديدة",
-                    color=COLORS['purple']
-                )
-                embed.add_field(
-                    name="📋 التعليمات",
-                    value="1️⃣ اختر الرانك من القائمة\n2️⃣ املأ معلومات الحساب\n3️⃣ انتظر الرد",
-                    inline=False
-                )
-                
-                await panel.send(embed=embed, view=TicketPanelView())
+                ch = await guild.create_text_channel("🎫│فتح-تذكرة", category=cat, overwrites=overwrites)
+                e = discord.Embed(title="🎫 نظام التذاكر", description="اختر رانك الحساب", color=0x9B59B6)
+                await ch.send(embed=e, view=TicketPanelView())
             
-            await interaction.followup.send("✅ تم إعداد نظام التذاكر!", ephemeral=True)
-            
+            await interaction.followup.send("✅ Done!")
         except Exception as e:
-            await interaction.followup.send(f"❌ خطأ: {str(e)}", ephemeral=True)
+            await interaction.followup.send(f"❌ Error: {e}")
     
-    @app_commands.command(name="close_ticket", description="إغلاق التذكرة الحالية")
+    @app_commands.command(name="close_ticket", description="إغلاق التذكرة")
     async def close_ticket(self, interaction: discord.Interaction):
-        if not interaction.channel.name.startswith("🎫"):
-            await interaction.response.send_message("❌ هذا الأمر يعمل فقط في قنوات التذاكر!", ephemeral=True)
-            return
-        
-        await interaction.response.send_message("🔒 جاري إغلاق التذكرة...")
-        await interaction.channel.delete()
+        if "🎫" in interaction.channel.name:
+            await interaction.response.send_message("🔒 Closing...")
+            await interaction.channel.delete()
+        else:
+            await interaction.response.send_message("❌ Not a ticket!", ephemeral=True)
 
 async def setup(bot):
     await bot.add_cog(TicketsCog(bot))

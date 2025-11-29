@@ -3,73 +3,47 @@ name: Discord Bot 24/7
 on:
   workflow_dispatch:
   push:
-    branches:
-      - main
+    branches: [main]
   schedule:
-    # كل 5 ساعات و 30 دقيقة
-    - cron: "30 */5 * * *"
+    - cron: "0 */5 * * *"
 
 concurrency:
-  group: discord-bot-runner
+  group: bot
   cancel-in-progress: true
 
 jobs:
-  run-bot:
+  run:
     runs-on: ubuntu-latest
-    timeout-minutes: 330  # 5.5 ساعة
-    
-    steps:
-      - name: 📥 Checkout
-        uses: actions/checkout@v4
+    timeout-minutes: 330
 
-      - name: 🐍 Setup Python
-        uses: actions/setup-python@v5
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: 'pip'
+          cache: pip
 
-      - name: 📦 Install
-        run: |
-          pip install --upgrade pip
-          pip install -r requirements.txt
+      - run: pip install -r requirements.txt
 
-      - name: 📁 Setup Data
-        run: mkdir -p data
+      - run: mkdir -p data
 
-      - name: 💾 Restore Data
-        uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
           name: bot-data
           path: data/
 
-      - name: 🤖 Run Bot
+      - name: Run Bot
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           GUILD_ID: ${{ secrets.GUILD_ID }}
           ADMIN_ROLE_ID: ${{ secrets.ADMIN_ROLE_ID }}
-        run: |
-          echo "🚀 Bot Starting..."
-          timeout 19800 python main.py || true
-          echo "✅ Run Complete"
+        run: timeout 19800 python main.py || true
 
-      - name: 💾 Save Data
+      - uses: actions/upload-artifact@v4
         if: always()
-        uses: actions/upload-artifact@v4
         with:
           name: bot-data
           path: data/
-          retention-days: 90
           overwrite: true
-
-      - name: 📊 Summary
-        if: always()
-        run: |
-          echo "## 🤖 Bot Run Summary" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-          echo "- **Status**: ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
-          echo "- **Python**: $(python --version)" >> $GITHUB_STEP_SUMMARY
-          echo "- **Time**: $(date)" >> $GITHUB_STEP_SUMMARY
-          if [ -f "data/accounts.json" ]; then
-            echo "- **Data**: Saved ✅" >> $GITHUB_STEP_SUMMARY
-          fi
