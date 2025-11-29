@@ -2,12 +2,11 @@ name: Auto Restart Bot
 
 on:
   schedule:
-    # كل 5 ساعات و 50 دقيقة
     - cron: "50 */5 * * *"
   workflow_dispatch:
 
 jobs:
-  trigger-main-workflow:
+  trigger-restart:
     runs-on: ubuntu-latest
     steps:
       - name: 🔄 Trigger Bot Restart
@@ -15,10 +14,14 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            github.rest.actions.createWorkflowDispatch({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              workflow_id: 'discord-bot.yml',
-              ref: 'main'
-            })
-            console.log('✅ Bot restart triggered')
+            try {
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'discord-bot.yml',
+                ref: 'main'
+              });
+              console.log('✅ Bot restart triggered successfully');
+            } catch (error) {
+              console.log('⚠️ Restart trigger failed:', error.message);
+            }
