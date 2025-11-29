@@ -1442,50 +1442,5 @@ async def force_save(interaction: discord.Interaction):
         await interaction.followup.send("✅ تم حفظ جميع البيانات بنجاح!")
     except Exception as e:
         await interaction.followup.send(f"❌ خطأ في الحفظ: {e}")
-# ============ RUN ============
-import signal
-import sys
-
-def signal_handler(sig, frame):
-    """Handle shutdown signals"""
-    print("\n⚠️ Shutdown signal received!")
-    print("💾 Saving all data...")
-    
-    # Force save all data
-    try:
-        import asyncio
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        
-        # Get current data and save
-        stats = loop.run_until_complete(db.get_stats())
-        loop.run_until_complete(db.save_json(db.stats_file, stats))
-        
-        accounts_data = db._read_file(db.accounts_file)
-        db._write_file(db.accounts_file, accounts_data)
-        
-        tickets_data = db._read_file(db.tickets_file)
-        db._write_file(db.tickets_file, tickets_data)
-        
-        print("✅ All data saved successfully!")
-    except Exception as e:
-        print(f"❌ Error saving data: {e}")
-    
-    sys.exit(0)
-
-# Register signal handlers
-signal.signal(signal.SIGINT, signal_handler)
-signal.signal(signal.SIGTERM, signal_handler)
-
 if __name__ == "__main__":
-    print("🚀 Starting bot...")
-    print("💾 Data will be saved to JSON files")
-    
-    if TOKEN:
-        try:
-            bot.run(TOKEN)
-        except KeyboardInterrupt:
-            print("\n⚠️ Bot interrupted!")
-            signal_handler(None, None)
-    else:
-        print("❌ No token!")
+    bot.run(TOKEN)
