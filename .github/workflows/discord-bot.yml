@@ -8,74 +8,64 @@ on:
     - cron: "0 */5 * * *"
 
 concurrency:
-  group: bot
+  group: bot-runner
   cancel-in-progress: true
 
 jobs:
   run:
     runs-on: ubuntu-latest
-    timeout-minutes: 330
+    timeout-minutes: 355 # 5 ساعات و 55 دقيقة
+    permissions:
+      contents: read
+      actions: write
 
     steps:
-      - uses: actions/checkout@v4
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v4
 
-      - uses: actions/setup-python@v5
+      - name: 🐍 Setup Python
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+          cache: 'pip'
 
-      - run: pip install -r requirements.txt
+      - name: 📦 Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
 
-      - run: mkdir -p data
+      - name: 📂 Create Data Directory
+        run: mkdir -p data
 
-      - name: Download Previous Data
-        uses: actions/download-artifact@v4
+      - name: 💾 Download Previous Data
+        uses: dawidd6/action-download-artifact@v2
         continue-on-error: true
         with:
+          workflow: discord-bot.yml
+          workflow_conclusion: success
           name: bot-data
           path: data/
+          if_no_artifact_found: warn
 
-      - name: Check Downloaded Data
+      - name: 🔍 Verify Data
         run: |
-          echo "=== Data Files ==="
-          ls -lah data/ || echo "No data directory"
+          echo "=== Data Check ==="
+          ls -R data/ || echo "No data found"
           if [ -f "data/accounts.json" ]; then
-            echo "accounts.json size: $(wc -c < data/accounts.json) bytes"
-            echo "Content preview:"
-            head -n 20 data/accounts.json
-          fi
-          if [ -f "data/stats.json" ]; then
-            echo "stats.json size: $(wc -c < data/stats.json) bytes"
+            echo "✅ Found accounts.json ($(wc -c < data/accounts.json) bytes)"
           fi
 
-      - name: Run Bot
+      - name: 🤖 Run Bot
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           GUILD_ID: ${{ secrets.GUILD_ID }}
           ADMIN_ROLE_ID: ${{ secrets.ADMIN_ROLE_ID }}
         run: |
-          echo "Starting bot..."
-          timeout 19800 python main.py || true
-          echo "Bot stopped"
+          echo "🚀 Starting Bot..."
+          # Run for 5 hours 45 minutes (20700 seconds)
+          timeout 20700 python main.py || echo "✅ Time limit reached - Stopping for restart"
 
-      - name: Verify Data Before Upload
-        if: always()
-        run: |
-          echo "=== Verifying Data Files ==="
-          ls -lah data/
-          if [ -f "data/accounts.json" ]; then
-            echo "✅ accounts.json exists ($(wc -c < data/accounts.json) bytes)"
-            cat data/accounts.json | head -n 20
-          else
-            echo "❌ accounts.json missing!"
-          fi
-          if [ -f "data/stats.json" ]; then
-            echo "✅ stats.json exists ($(wc -c < data/stats.json) bytes)"
-          fi
-          if [ -f "data/tickets.json" ]; then
-            echo "✅ tickets.json exists ($(wc -c < data/tickets.json) bytes)"
-          fi
-
-      - name: Upload Data
+      - name: 💾 Save Data
         if: always()
         uses: actions/upload-artifact@v4
         with:
@@ -83,13 +73,24 @@ jobs:
           path: data/
           retention-days: 90
           overwrite: true
-          if-no-files-found: warn
 
-      - name: Upload Backup
-        if: always()
-        uses: actions/upload-artifact@v4
+      - name: 🔄 Trigger Next Run
+        if: always() # Run even if timeout occurred
+        uses: actions/github-script@v6
         with:
-          name: bot-data-backup-${{ github.run_number }}
-          path: data/
-          retention-days: 30
-          if-no-files-found: warn
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            try {
+              // Wait 30 seconds before triggering next run
+              await new Promise(r => setTimeout(r, 30000));
+              
+              await github.rest.actions.createWorkflowDispatch({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                workflow_id: 'discord-bot.yml',
+                ref: 'main'
+              });
+              console.log('✅ Next run triggered successfully');
+            } catch (error) {
+              console.log('⚠️ Failed to trigger next run:', error.message);
+            }
