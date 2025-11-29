@@ -63,7 +63,16 @@ class Database:
         defaults = {
             self.accounts_file: {"accounts": [], "backup": []},
             self.tickets_file: {"tickets": [], "closed_tickets": []},
-            self.stats_file: {"total_sales": 0, "total_revenue": 0, "accounts_sold": [], "daily_stats": {}, "seller_stats": {}, "rank_stats": {}},
+            self.stats_file: {
+                "total_sales": 0,
+                "total_revenue": 0,
+                "total_purchase_cost": 0,
+                "accounts_sold": [],
+                "purchases": [],
+                "daily_stats": {},
+                "seller_stats": {},
+                "rank_stats": {}
+            },
             self.config_file: {"stats_channel_id": None, "stats_message_id": None}
         }
         for path, data in defaults.items():
@@ -192,12 +201,34 @@ class Database:
         
         await self.save_json(self.stats_file, data)
     
+    async def add_purchase(self, purchase_data):
+        """إضافة عملية شراء حسابات"""
+        data = await self.load_json(self.stats_file)
+        
+        if 'purchases' not in data: data['purchases'] = []
+        if 'total_purchase_cost' not in data: data['total_purchase_cost'] = 0
+        
+        purchase_id = f"PUR-{len(data['purchases']) + 1:04d}"
+        purchase_record = {
+            'id': purchase_id,
+            **purchase_data,
+            'date': datetime.now().isoformat()
+        }
+        
+        data['purchases'].append(purchase_record)
+        data['total_purchase_cost'] = data.get('total_purchase_cost', 0) + purchase_data.get('cost', 0)
+        
+        await self.save_json(self.stats_file, data)
+        return purchase_id
+    
     async def get_stats(self):
         data = await self.load_json(self.stats_file)
         return {
             "total_sales": data.get("total_sales", 0),
             "total_revenue": data.get("total_revenue", 0),
+            "total_purchase_cost": data.get("total_purchase_cost", 0),
             "accounts_sold": data.get("accounts_sold", []),
+            "purchases": data.get("purchases", []),
             "daily_stats": data.get("daily_stats", {}),
             "seller_stats": data.get("seller_stats", {}),
             "rank_stats": data.get("rank_stats", {})
@@ -222,33 +253,47 @@ async def create_stats_embed():
     today = datetime.now().strftime('%Y-%m-%d')
     daily = stats.get('daily_stats', {}).get(today, {'sales': 0, 'revenue': 0})
     
+    # Calculate net profit
+    total_revenue = stats.get('total_revenue', 0)
+    total_purchase_cost = stats.get('total_purchase_cost', 0)
+    net_profit = total_revenue - total_purchase_cost
+    
+    # Count purchased accounts
+    total_purchased = sum([p.get('quantity', 0) for p in stats.get('purchases', [])])
+    
     e = discord.Embed(
         title="📊 إحصائيات النظام",
-        description="*اضغط 🔄 للتحديث*",
+        description="*اضغط 🔄 للتحديث | 🛒 لإضافة مشتريات | 💰 لتقسيم الأرباح*",
         color=COLORS['purple'],
         timestamp=discord.utils.utcnow()
     )
     
+    # Revenue section
     e.add_field(
-        name="💰 المبيعات",
+        name="💰 الإيرادات والأرباح",
         value=f"```yaml\n"
-              f"الإجمالي: {stats.get('total_sales', 0)}\n"
-              f"الأرباح: {stats.get('total_revenue', 0):,.0f} ج\n"
-              f"المتوسط: {stats.get('total_revenue', 0) / max(stats.get('total_sales', 1), 1):,.0f} ج\n"
+              f"المبيعات: {stats.get('total_sales', 0)}\n"
+              f"الإيرادات: {total_revenue:,.0f} ج\n"
+              f"التكاليف: {total_purchase_cost:,.0f} ج\n"
+              f"────────────────\n"
+              f"صافي الربح: {net_profit:,.0f} ج\n"
               f"```",
         inline=True
     )
     
+    # Account stats
     e.add_field(
         name="🎮 الحسابات",
         value=f"```yaml\n"
-              f"الكل: {len(accounts)}\n"
+              f"الحالي: {len(accounts)}\n"
               f"مكتمل ✅: {finished}\n"
               f"جاري ⏳: {not_finished}\n"
+              f"مشترى 🛒: {total_purchased}\n"
               f"```",
         inline=True
     )
     
+    # Today stats
     e.add_field(
         name="📅 اليوم",
         value=f"```yaml\n"
@@ -258,14 +303,16 @@ async def create_stats_embed():
         inline=True
     )
     
+    # Top sellers
     seller_stats = stats.get('seller_stats', {})
     if seller_stats:
         top_sellers = sorted(seller_stats.items(), key=lambda x: x[1]['sales'], reverse=True)[:5]
-        sellers_text = "\n".join([f"{i+1}. {s[0]}: {s[1]['sales']}" for i, s in enumerate(top_sellers)])
+        sellers_text = "\n".join([f"{i+1}. {s[0]}: {s[1]['sales']} ({s[1]['revenue']:,.0f} ج)" for i, s in enumerate(top_sellers)])
     else:
         sellers_text = "لا يوجد"
     e.add_field(name="🏆 أفضل البائعين", value=f"```\n{sellers_text}\n```", inline=True)
     
+    # Top ranks
     rank_stats = stats.get('rank_stats', {})
     if rank_stats:
         top_ranks = sorted(rank_stats.items(), key=lambda x: x[1]['sales'], reverse=True)[:5]
@@ -274,14 +321,26 @@ async def create_stats_embed():
         ranks_text = "لا يوجد"
     e.add_field(name="📊 أكثر الرانكات", value=f"```\n{ranks_text}\n```", inline=True)
     
-    last_sales = stats.get('accounts_sold', [])[-5:][::-1]
-    if last_sales:
-        sales_text = "\n".join([f"• {s.get('rank', '?')}: {s.get('price', 0):,.0f} ج" for s in last_sales])
+    # Last purchases
+    purchases = stats.get('purchases', [])[-3:][::-1]
+    if purchases:
+        purchase_text = "\n".join([f"• {p.get('quantity', 0)} حساب - {p.get('cost', 0):,.0f} ج" for p in purchases])
     else:
-        sales_text = "لا يوجد"
-    e.add_field(name="🛒 آخر المبيعات", value=f"```\n{sales_text}\n```", inline=False)
+        purchase_text = "لا يوجد"
+    e.add_field(name="🛒 آخر المشتريات", value=f"```\n{purchase_text}\n```", inline=False)
     
-    e.set_footer(text="🔄 آخر تحديث")
+    # Profit indicator
+    if net_profit > 0:
+        profit_emoji = "📈"
+        profit_status = "ربح"
+    elif net_profit < 0:
+        profit_emoji = "📉"
+        profit_status = "خسارة"
+    else:
+        profit_emoji = "➖"
+        profit_status = "متعادل"
+    
+    e.set_footer(text=f"{profit_emoji} {profit_status}: {abs(net_profit):,.0f} ج | 🔄 آخر تحديث")
     
     return e
 
@@ -321,19 +380,175 @@ async def update_stats_message(guild):
         print(f"❌ Stats update error: {e}")
     return False
 
+# ============ MODALS ============
+
+class AddPurchaseModal(ui.Modal, title="🛒 إضافة عملية شراء"):
+    quantity = ui.TextInput(
+        label="عدد الحسابات المشتراة",
+        placeholder="مثال: 10",
+        required=True
+    )
+    
+    cost = ui.TextInput(
+        label="التكلفة الإجمالية",
+        placeholder="مثال: 5000",
+        required=True
+    )
+    
+    source = ui.TextInput(
+        label="المصدر/البائع",
+        placeholder="من أين اشتريت الحسابات؟",
+        required=True
+    )
+    
+    notes = ui.TextInput(
+        label="ملاحظات",
+        style=discord.TextStyle.paragraph,
+        placeholder="أي ملاحظات إضافية...",
+        required=False
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            quantity = int(self.quantity.value)
+            cost = float(self.cost.value)
+        except:
+            await interaction.response.send_message("❌ الكمية والتكلفة لازم أرقام!", ephemeral=True)
+            return
+        
+        purchase_id = await db.add_purchase({
+            'quantity': quantity,
+            'cost': cost,
+            'source': self.source.value,
+            'notes': self.notes.value or "",
+            'added_by': interaction.user.id,
+            'added_by_name': interaction.user.name
+        })
+        
+        embed = discord.Embed(
+            title="🛒 تم تسجيل عملية الشراء",
+            color=COLORS['success']
+        )
+        embed.add_field(name="🆔 رقم العملية", value=purchase_id, inline=True)
+        embed.add_field(name="📦 الكمية", value=f"{quantity} حساب", inline=True)
+        embed.add_field(name="💵 التكلفة", value=f"{cost:,.0f} ج", inline=True)
+        embed.add_field(name="🏪 المصدر", value=self.source.value, inline=True)
+        embed.add_field(name="👤 أضافها", value=interaction.user.mention, inline=True)
+        if self.notes.value:
+            embed.add_field(name="📝 ملاحظات", value=self.notes.value, inline=False)
+        embed.timestamp = discord.utils.utcnow()
+        
+        await interaction.response.send_message(embed=embed)
+        await update_stats_message(interaction.guild)
+
+class ProfitCalculatorModal(ui.Modal, title="💰 حساب وتقسيم الأرباح"):
+    num_people = ui.TextInput(
+        label="عدد الأشخاص",
+        placeholder="افتراضي: 5",
+        default="5",
+        required=True
+    )
+    
+    notes = ui.TextInput(
+        label="ملاحظات",
+        style=discord.TextStyle.paragraph,
+        placeholder="أي ملاحظات عن التقسيم...",
+        required=False
+    )
+    
+    async def on_submit(self, interaction: discord.Interaction):
+        try:
+            num_people = int(self.num_people.value)
+            if num_people <= 0:
+                raise ValueError
+        except:
+            await interaction.response.send_message("❌ العدد لازم يكون رقم أكبر من 0!", ephemeral=True)
+            return
+        
+        stats = await db.get_stats()
+        total_revenue = stats.get('total_revenue', 0)
+        total_purchase_cost = stats.get('total_purchase_cost', 0)
+        net_profit = total_revenue - total_purchase_cost
+        per_person = net_profit / num_people
+        
+        embed = discord.Embed(
+            title="💰 حساب الأرباح",
+            description=f"تم المحاسبة على **{num_people}** أشخاص",
+            color=COLORS['success'] if net_profit > 0 else COLORS['error']
+        )
+        
+        embed.add_field(
+            name="📊 الملخص المالي",
+            value=f"```yaml\n"
+                  f"إجمالي الإيرادات: {total_revenue:,.0f} ج\n"
+                  f"إجمالي التكاليف: {total_purchase_cost:,.0f} ج\n"
+                  f"────────────────────────\n"
+                  f"صافي الربح: {net_profit:,.0f} ج\n"
+                  f"```",
+            inline=False
+        )
+        
+        embed.add_field(
+            name=f"👥 حصة كل شخص ({num_people} أشخاص)",
+            value=f"```yaml\n"
+                  f"حصة الفرد: {per_person:,.2f} ج\n"
+                  f"```",
+            inline=False
+        )
+        
+        # Breakdown
+        breakdown = ""
+        for i in range(1, num_people + 1):
+            breakdown += f"{i}. الشخص {i}: {per_person:,.2f} ج\n"
+        
+        embed.add_field(
+            name="📋 التفاصيل",
+            value=f"```\n{breakdown}```",
+            inline=False
+        )
+        
+        if self.notes.value:
+            embed.add_field(name="📝 ملاحظات", value=self.notes.value, inline=False)
+        
+        embed.add_field(
+            name="⚠️ تنبيه",
+            value="هذا حساب تقديري. لم يتم إعادة تعيين الإحصائيات.\nاستخدم `/reset_stats` لبداية جديدة.",
+            inline=False
+        )
+        
+        embed.set_footer(text=f"تم الحساب بواسطة {interaction.user.name}")
+        embed.timestamp = discord.utils.utcnow()
+        
+        await interaction.response.send_message(embed=embed)
+
 # ============ VIEWS ============
 
-# --- Stats View with Refresh Button ---
 class StatsView(ui.View):
     def __init__(self):
         super().__init__(timeout=None)
     
-    @ui.button(label="🔄 تحديث", style=discord.ButtonStyle.primary, custom_id="refresh_stats")
+    @ui.button(label="🔄", style=discord.ButtonStyle.primary, custom_id="refresh_stats")
     async def refresh(self, interaction: discord.Interaction, button: ui.Button):
         await interaction.response.defer()
         embed = await create_stats_embed()
         await interaction.message.edit(embed=embed, view=self)
         await interaction.followup.send("✅ تم التحديث!", ephemeral=True)
+    
+    @ui.button(label="🛒", style=discord.ButtonStyle.secondary, custom_id="add_purchase_btn")
+    async def add_purchase(self, interaction: discord.Interaction, button: ui.Button):
+        admin_role = interaction.guild.get_role(ADMIN_ROLE_ID)
+        if admin_role and admin_role not in interaction.user.roles:
+            await interaction.response.send_message("❌ الأدمن فقط يمكنه إضافة مشتريات!", ephemeral=True)
+            return
+        await interaction.response.send_modal(AddPurchaseModal())
+    
+    @ui.button(label="💰", style=discord.ButtonStyle.success, custom_id="calc_profit_btn")
+    async def calculate_profit(self, interaction: discord.Interaction, button: ui.Button):
+        admin_role = interaction.guild.get_role(ADMIN_ROLE_ID)
+        if admin_role and admin_role not in interaction.user.roles:
+            await interaction.response.send_message("❌ الأدمن فقط يمكنه حساب الأرباح!", ephemeral=True)
+            return
+        await interaction.response.send_modal(ProfitCalculatorModal())
 
 # --- Ticket Views ---
 class RankCategorySelect(ui.Select):
@@ -548,7 +763,7 @@ class FinalView(ui.View):
         await interaction.response.send_message("🗑️ جاري الحذف...")
         await interaction.channel.delete()
 
-# --- Account Views ---
+# --- Account Views (نفس الكود السابق) ---
 class AccountInfoModal(ui.Modal, title="📝 إضافة حساب"):
     account_info = ui.TextInput(label="معلومات الحساب", placeholder="الإيميل\nالباسورد\nأي معلومات...", style=discord.TextStyle.paragraph, required=True, max_length=1000)
     current_level = ui.TextInput(label="اللفل الحالي", placeholder="مثال: 10", required=True)
@@ -915,9 +1130,155 @@ async def setup_all(interaction: discord.Interaction):
         'stats_channel_id': ch.id,
         'stats_message_id': msg.id
     })
-    status.append("✅ Stats (with 🔄 button)")
+    status.append("✅ Stats (🔄 | 🛒 | 💰)")
     
     await interaction.followup.send(embed=discord.Embed(title="✅ تم!", description="\n".join(status), color=COLORS['success']))
+
+@bot.tree.command(name="add_purchase", description="إضافة عملية شراء حسابات")
+@app_commands.describe(quantity="عدد الحسابات", cost="التكلفة الإجمالية", source="المصدر")
+@app_commands.default_permissions(administrator=True)
+async def add_purchase_cmd(interaction: discord.Interaction, quantity: int, cost: float, source: str, notes: str = ""):
+    purchase_id = await db.add_purchase({
+        'quantity': quantity,
+        'cost': cost,
+        'source': source,
+        'notes': notes,
+        'added_by': interaction.user.id,
+        'added_by_name': interaction.user.name
+    })
+    
+    embed = discord.Embed(title="🛒 تم تسجيل الشراء", color=COLORS['success'])
+    embed.add_field(name="🆔 ID", value=purchase_id, inline=True)
+    embed.add_field(name="📦 الكمية", value=f"{quantity} حساب", inline=True)
+    embed.add_field(name="💵 التكلفة", value=f"{cost:,.0f} ج", inline=True)
+    embed.add_field(name="🏪 المصدر", value=source, inline=True)
+    
+    await interaction.response.send_message(embed=embed)
+    await update_stats_message(interaction.guild)
+
+@bot.tree.command(name="list_purchases", description="عرض قائمة المشتريات")
+@app_commands.default_permissions(administrator=True)
+async def list_purchases(interaction: discord.Interaction):
+    stats = await db.get_stats()
+    purchases = stats.get('purchases', [])
+    
+    if not purchases:
+        await interaction.response.send_message("📭 لا توجد مشتريات!", ephemeral=True)
+        return
+    
+    embed = discord.Embed(title=f"🛒 قائمة المشتريات ({len(purchases)})", color=COLORS['info'])
+    
+    total_quantity = sum([p.get('quantity', 0) for p in purchases])
+    total_cost = sum([p.get('cost', 0) for p in purchases])
+    
+    embed.description = f"```yaml\n📦 إجمالي الحسابات: {total_quantity}\n💰 إجمالي التكلفة: {total_cost:,.0f} ج\n```"
+    
+    for p in purchases[-10:]:
+        embed.add_field(
+            name=f"🆔 {p.get('id', 'N/A')}",
+            value=f"📦 {p.get('quantity', 0)} حساب\n💵 {p.get('cost', 0):,.0f} ج\n🏪 {p.get('source', 'N/A')}",
+            inline=True
+        )
+    
+    await interaction.response.send_message(embed=embed, ephemeral=True)
+
+@bot.tree.command(name="calculate_profit", description="حساب وتقسيم الأرباح")
+@app_commands.describe(num_people="عدد الأشخاص (افتراضي: 5)")
+@app_commands.default_permissions(administrator=True)
+async def calculate_profit(interaction: discord.Interaction, num_people: int = 5):
+    if num_people <= 0:
+        await interaction.response.send_message("❌ العدد لازم يكون أكبر من 0!", ephemeral=True)
+        return
+    
+    stats = await db.get_stats()
+    total_revenue = stats.get('total_revenue', 0)
+    total_purchase_cost = stats.get('total_purchase_cost', 0)
+    net_profit = total_revenue - total_purchase_cost
+    per_person = net_profit / num_people
+    
+    embed = discord.Embed(
+        title="💰 حساب وتقسيم الأرباح",
+        description=f"التقسيم على **{num_people}** أشخاص",
+        color=COLORS['success'] if net_profit > 0 else COLORS['error']
+    )
+    
+    embed.add_field(
+        name="📊 الملخص المالي",
+        value=f"```yaml\n"
+              f"إجمالي الإيرادات: {total_revenue:,.0f} ج\n"
+              f"إجمالي التكاليف: {total_purchase_cost:,.0f} ج\n"
+              f"──────────────────────\n"
+              f"صافي الربح: {net_profit:,.0f} ج\n"
+              f"```",
+        inline=False
+    )
+    
+    embed.add_field(
+        name=f"👥 حصة كل شخص",
+        value=f"```yaml\n"
+              f"حصة الفرد: {per_person:,.2f} ج\n"
+              f"```",
+        inline=False
+    )
+    
+    breakdown = ""
+    for i in range(1, min(num_people + 1, 11)):
+        breakdown += f"{i}. الشخص {i}: {per_person:,.2f} ج\n"
+    
+    if num_people > 10:
+        breakdown += f"... و {num_people - 10} شخص آخر"
+    
+    embed.add_field(name="📋 التفاصيل", value=f"```\n{breakdown}```", inline=False)
+    embed.add_field(
+        name="⚠️ ملحوظة",
+        value="استخدم `/reset_stats` لإعادة تعيين الإحصائيات وبدء دورة جديدة",
+        inline=False
+    )
+    
+    embed.set_footer(text=f"تم الحساب بواسطة {interaction.user.name}")
+    embed.timestamp = discord.utils.utcnow()
+    
+    await interaction.response.send_message(embed=embed)
+
+@bot.tree.command(name="reset_stats", description="إعادة تعيين الإحصائيات")
+@app_commands.default_permissions(administrator=True)
+async def reset_stats(interaction: discord.Interaction):
+    await interaction.response.send_message(
+        "⚠️ **تحذير!**\nهل أنت متأكد من إعادة تعيين كل الإحصائيات؟\n"
+        "سيتم حذف:\n"
+        "• جميع المبيعات\n"
+        "• جميع المشتريات\n"
+        "• جميع الأرباح\n"
+        "• جميع البيانات المالية\n\n"
+        "**هذا الإجراء لا يمكن التراجع عنه!**\n\n"
+        "اكتب `/confirm_reset` للتأكيد",
+        ephemeral=True
+    )
+
+@bot.tree.command(name="confirm_reset", description="تأكيد إعادة التعيين")
+@app_commands.default_permissions(administrator=True)
+async def confirm_reset(interaction: discord.Interaction):
+    default_stats = {
+        "total_sales": 0,
+        "total_revenue": 0,
+        "total_purchase_cost": 0,
+        "accounts_sold": [],
+        "purchases": [],
+        "daily_stats": {},
+        "seller_stats": {},
+        "rank_stats": {}
+    }
+    
+    await db.save_json(db.stats_file, default_stats)
+    
+    embed = discord.Embed(
+        title="✅ تمت إعادة التعيين",
+        description="تم حذف جميع الإحصائيات وبدء دورة جديدة",
+        color=COLORS['success']
+    )
+    
+    await interaction.response.send_message(embed=embed)
+    await update_stats_message(interaction.guild)
 
 @bot.tree.command(name="clean_channels", description="حذف القنوات")
 @app_commands.default_permissions(administrator=True)
@@ -981,7 +1342,7 @@ async def bot_info(interaction: discord.Interaction):
     e.add_field(name="Name", value=bot.user.name, inline=True)
     e.add_field(name="Servers", value=str(len(bot.guilds)), inline=True)
     e.add_field(name="Latency", value=f"{round(bot.latency*1000)}ms", inline=True)
-    e.add_field(name="Auto-Update", value="كل 3 دقائق", inline=True)
+    e.add_field(name="Features", value="✅ Tickets\n✅ Accounts\n✅ Stats\n✅ Purchases\n✅ Profit Split", inline=False)
     await interaction.response.send_message(embed=e, ephemeral=True)
 
 # ============ KEEP ALIVE ============
