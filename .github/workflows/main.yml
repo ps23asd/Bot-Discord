@@ -1,81 +1,98 @@
-import discord
-from discord.ext import commands
-import asyncio
-import os
-from config import TOKEN, GUILD_ID
-from views.ticket_views import TicketPanelView, TicketControlView, WaitingMoneyView, FinalView
-from views.account_views import Level15NotFinishView, Level15DoneView, AccountControlView
+name: Discord Bot 24/7
 
-# ✅ استيراد keep_alive
-try:
-    from keep_alive import keep_alive
-    KEEP_ALIVE_ENABLED = True
-except ImportError:
-    KEEP_ALIVE_ENABLED = False
-    print("⚠️ keep_alive.py not found, running without web server")
+on:
+  workflow_dispatch:   # تشغيل يدوي
+  push:
+    branches:
+      - main           # أي push يلغي الـ run القديم ويبدأ جديد
+  schedule:
+    # كل 5 ساعات و 45 دقيقة (قبل الـ 6 ساعات بـ 15 دقيقة)
+    - cron: "*/45 */5 * * *"
 
-class MarvelBot(commands.Bot):
-    def __init__(self):
-        intents = discord.Intents.default()
-        intents.message_content = True
-        intents.members = True
-        intents.guilds = True
-        
-        super().__init__(
-            command_prefix="!",
-            intents=intents,
-            help_command=None
-        )
-    
-    async def setup_hook(self):
-        # Load cogs
-        for cog in ['tickets', 'accounts', 'stats', 'admin']:
-            try:
-                await self.load_extension(f'cogs.{cog}')
-                print(f"✅ Loaded cog: {cog}")
-            except Exception as e:
-                print(f"❌ Failed to load cog {cog}: {e}")
-        
-        # Add persistent views
-        self.add_view(TicketPanelView())
-        self.add_view(TicketControlView(""))
-        self.add_view(WaitingMoneyView(""))
-        self.add_view(FinalView())
-        self.add_view(Level15NotFinishView())
-        self.add_view(Level15DoneView())
-        self.add_view(AccountControlView(""))
-        
-        # Sync commands
-        if GUILD_ID:
-            guild = discord.Object(id=GUILD_ID)
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-        else:
-            await self.tree.sync()
-        
-        print("✅ Commands synced!")
-    
-    async def on_ready(self):
-        print(f"{'='*50}")
-        print(f"🤖 Bot is ready!")
-        print(f"📛 Logged in as: {self.user.name}")
-        print(f"🆔 Bot ID: {self.user.id}")
-        print(f"📊 Servers: {len(self.guilds)}")
-        print(f"{'='*50}")
-        
-        # Set status
-        await self.change_presence(
-            activity=discord.Activity(
-                type=discord.ActivityType.watching,
-                name="Marvel Accounts 🎮"
-            )
-        )
+# إلغاء أي run قديم لو في push جديد
+concurrency:
+  group: discord-bot
+  cancel-in-progress: true
 
-# Run bot
-if __name__ == "__main__":
-    # ✅ تشغيل keep_alive server
-    if KEEP_ALIVE_ENABLED:
-        keep_alive()
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 345  # 5 ساعات و 45 دقيقة
     
-    bot = MarvelBot()
-    bot.run(TOKEN)
+    steps:
+      # 1. جلب الكود
+      - name: 📥 Checkout Code
+        uses: actions/checkout@v3
+
+      # 2. إعداد Python
+      - name: 🐍 Setup Python 3.11
+        uses: actions/setup-python@v4
+        with:
+          python-version: "3.11"
+          cache: 'pip'
+
+      # 3. تثبيت المكتبات
+      - name: 📦 Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # 4. إنشاء مجلد البيانات
+      - name: 📁 Create Data Directory
+        run: mkdir -p data
+
+      # 5. تحميل آخر نسخة من البيانات
+      - name: 💾 Download Previous Data
+        uses: dawidd6/action-download-artifact@v2
+        continue-on-error: true
+        with:
+          workflow: discord-bot.yml
+          name: bot-data
+          path: data/
+          if_no_artifact_found: warn
+
+      # 6. عرض حالة البيانات
+      - name: 📊 Check Data Status
+        run: |
+          echo "=== Data Directory Contents ==="
+          ls -la data/ || echo "No data directory yet"
+          echo "=============================="
+
+      # 7. تشغيل البوت
+      - name: 🤖 Run Discord Bot
+        env:
+          DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
+          GUILD_ID: ${{ secrets.GUILD_ID }}
+          ADMIN_ROLE_ID: ${{ secrets.ADMIN_ROLE_ID }}
+        run: |
+          echo "🚀 Starting Discord Bot..."
+          echo "⏰ Will run for 5 hours 45 minutes"
+          python main.py &
+          BOT_PID=$!
+          
+          # Wait for timeout or manual stop
+          sleep 20700  # 5 hours 45 minutes in seconds
+          
+          echo "⏰ Time limit reached, shutting down gracefully..."
+          kill -SIGTERM $BOT_PID 2>/dev/null || true
+          wait $BOT_PID 2>/dev/null || true
+          echo "✅ Bot stopped"
+
+      # 8. حفظ البيانات (حتى لو البوت توقف)
+      - name: 💾 Save Data
+        if: always()
+        uses: actions/upload-artifact@v3
+        with:
+          name: bot-data
+          path: data/
+          retention-days: 90  # حفظ لمدة 90 يوم
+
+      # 9. عرض ملخص
+      - name: 📋 Summary
+        if: always()
+        run: |
+          echo "=== Run Summary ==="
+          echo "Status: ${{ job.status }}"
+          echo "Data saved to artifacts"
+          echo "Next run will start in ~15 minutes"
+          echo "=================="
