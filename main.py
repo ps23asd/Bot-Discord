@@ -1370,7 +1370,78 @@ try:
     keep_alive()
 except:
     print("⚠️ Flask not available")
+@bot.tree.command(name="verify_data", description="التحقق من حفظ البيانات")
+@app_commands.default_permissions(administrator=True)
+async def verify_data(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    
+    import os
+    
+    embed = discord.Embed(title="🔍 التحقق من البيانات", color=COLORS['info'])
+    
+    # Check files
+    for file_name, file_path in [
+        ("Accounts", db.accounts_file),
+        ("Tickets", db.tickets_file),
+        ("Stats", db.stats_file),
+        ("Config", db.config_file)
+    ]:
+        if os.path.exists(file_path):
+            size = os.path.getsize(file_path)
+            data = db._read_file(file_path)
+            items = 0
+            
+            if file_name == "Accounts":
+                items = len(data.get('accounts', []))
+            elif file_name == "Tickets":
+                items = len(data.get('tickets', [])) + len(data.get('closed_tickets', []))
+            elif file_name == "Stats":
+                items = data.get('total_sales', 0)
+            
+            embed.add_field(
+                name=f"{'✅' if size > 50 else '⚠️'} {file_name}",
+                value=f"```\nSize: {size} bytes\nItems: {items}\nPath: {file_path}\n```",
+                inline=False
+            )
+        else:
+            embed.add_field(
+                name=f"❌ {file_name}",
+                value="```\nFile not found!\n```",
+                inline=False
+            )
+    
+    # Get stats
+    stats = await db.get_stats()
+    accounts = await db.get_all_accounts()
+    
+    embed.add_field(
+        name="📊 Summary",
+        value=f"```yaml\n"
+              f"Accounts: {len(accounts)}\n"
+              f"Sales: {stats.get('total_sales', 0)}\n"
+              f"Revenue: {stats.get('total_revenue', 0)} ج\n"
+              f"Purchases: {len(stats.get('purchases', []))}\n"
+              f"```",
+        inline=False
+    )
+    
+    await interaction.followup.send(embed=embed)
 
+@bot.tree.command(name="force_save", description="حفظ فوري للبيانات")
+@app_commands.default_permissions(administrator=True)
+async def force_save(interaction: discord.Interaction):
+    await interaction.response.defer(ephemeral=True)
+    
+    try:
+        # Force read and write all files
+        for file_path in [db.accounts_file, db.tickets_file, db.stats_file, db.config_file]:
+            if os.path.exists(file_path):
+                data = db._read_file(file_path)
+                db._write_file(file_path, data)
+        
+        await interaction.followup.send("✅ تم حفظ جميع البيانات بنجاح!")
+    except Exception as e:
+        await interaction.followup.send(f"❌ خطأ في الحفظ: {e}")
 # ============ RUN ============
 import signal
 import sys
