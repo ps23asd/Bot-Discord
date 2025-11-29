@@ -1,4 +1,4 @@
-name: Discord Bot 24/7
+name: Bot
 
 on:
   workflow_dispatch:
@@ -22,7 +22,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
 
       - run: pip install -r requirements.txt
 
@@ -31,10 +30,10 @@ jobs:
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          name: bot-data
+          name: data
           path: data/
 
-      - name: Run Bot
+      - name: Run
         env:
           DISCORD_TOKEN: ${{ secrets.DISCORD_TOKEN }}
           GUILD_ID: ${{ secrets.GUILD_ID }}
@@ -44,6 +43,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: bot-data
+          name: data
           path: data/
           overwrite: true
