@@ -15,7 +15,7 @@ try:
     KEEP_ALIVE_ENABLED = True
 except ImportError:
     KEEP_ALIVE_ENABLED = False
-    print("⚠️ keep_alive.py not found, running without web server")
+    print("⚠️ keep_alive.py not found")
 
 class MarvelBot(commands.Bot):
     def __init__(self):
@@ -30,7 +30,7 @@ class MarvelBot(commands.Bot):
             help_command=None
         )
         
-        self.shutting_down = False
+        self.synced = False
     
     async def setup_hook(self):
         # Load cogs
@@ -49,28 +49,31 @@ class MarvelBot(commands.Bot):
         self.add_view(Level15NotFinishView())
         self.add_view(Level15DoneView())
         self.add_view(AccountControlView(""))
-        
-        # Sync commands
-        if GUILD_ID:
-            guild = discord.Object(id=GUILD_ID)
-            self.tree.copy_global_to(guild=guild)
-            await self.tree.sync(guild=guild)
-        else:
-            await self.tree.sync()
-        
-        print("✅ Commands synced!")
     
     async def on_ready(self):
+        # Sync commands once
+        if not self.synced:
+            try:
+                if GUILD_ID and GUILD_ID != 0:
+                    guild = discord.Object(id=GUILD_ID)
+                    self.tree.copy_global_to(guild=guild)
+                    synced = await self.tree.sync(guild=guild)
+                    print(f"✅ Synced {len(synced)} commands to guild {GUILD_ID}")
+                else:
+                    synced = await self.tree.sync()
+                    print(f"✅ Synced {len(synced)} commands globally")
+                self.synced = True
+            except Exception as e:
+                print(f"❌ Failed to sync commands: {e}")
+        
         print(f"{'='*50}")
         print(f"🤖 Bot is ready!")
         print(f"📛 Logged in as: {self.user.name}")
         print(f"🆔 Bot ID: {self.user.id}")
         print(f"📊 Servers: {len(self.guilds)}")
         print(f"⏰ Running on GitHub Actions")
-        print(f"💾 Data will be saved automatically")
         print(f"{'='*50}")
         
-        # Set status
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
@@ -79,39 +82,25 @@ class MarvelBot(commands.Bot):
         )
     
     async def close(self):
-        """حفظ البيانات عند الإغلاق"""
-        if not self.shutting_down:
-            self.shutting_down = True
-            print("\n" + "="*50)
-            print("🛑 Shutting down bot...")
-            print("💾 Saving data...")
-            
-            # إعطاء وقت للـ database لحفظ أي معاملات معلقة
-            await asyncio.sleep(2)
-            
-            print("✅ Data saved successfully")
-            print("👋 Bot shutdown complete")
-            print("="*50 + "\n")
-        
+        print("\n🛑 Shutting down...")
+        print("💾 Saving data...")
+        await asyncio.sleep(1)
+        print("✅ Shutdown complete")
         await super().close()
 
 def signal_handler(sig, frame):
-    """معالج إشارات النظام للإغلاق الآمن"""
     print(f"\n⚠️ Received signal {sig}")
     sys.exit(0)
 
-# تسجيل معالجات الإشارات
 signal.signal(signal.SIGTERM, signal_handler)
 signal.signal(signal.SIGINT, signal_handler)
 
-# Run bot
 if __name__ == "__main__":
     print("="*50)
     print("🚀 Starting Marvel Discord Bot")
     print("📍 Environment: GitHub Actions")
     print("="*50 + "\n")
     
-    # تشغيل keep_alive server
     if KEEP_ALIVE_ENABLED:
         keep_alive()
     
@@ -119,10 +108,6 @@ if __name__ == "__main__":
         bot = MarvelBot()
         bot.run(TOKEN)
     except KeyboardInterrupt:
-        print("\n⚠️ Interrupted by user")
+        print("\n⚠️ Interrupted")
     except Exception as e:
-        print(f"\n❌ Fatal error: {e}")
-        import traceback
-        traceback.print_exc()
-    finally:
-        print("🔚 Bot process ended")
+        print(f"\n❌ Error: {e}")
