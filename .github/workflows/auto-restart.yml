@@ -10,7 +10,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: 🔄 Trigger Bot Restart
-        uses: actions/github-script@v6
+        uses: actions/github-script@v7
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
@@ -24,4 +24,8 @@ jobs:
               console.log('✅ Bot restart triggered successfully');
             } catch (error) {
               console.log('⚠️ Restart trigger failed:', error.message);
+              // Don't fail the job if bot is already running
+              if (!error.message.includes('already running')) {
+                throw error;
+              }
             }
