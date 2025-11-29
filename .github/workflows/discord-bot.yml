@@ -19,10 +19,10 @@ jobs:
     
     steps:
       - name: 📥 Checkout Code
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: 🐍 Setup Python 3.11
-        uses: actions/setup-python@v4
+        uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: 'pip'
@@ -36,18 +36,21 @@ jobs:
         run: mkdir -p data
 
       - name: 💾 Download Previous Data
-        uses: dawidd6/action-download-artifact@v2
+        uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          workflow: discord-bot.yml
           name: bot-data
           path: data/
-          if_no_artifact_found: warn
 
       - name: 📊 Check Data Status
         run: |
           echo "=== Data Directory Contents ==="
           ls -la data/ || echo "No data directory yet"
+          if [ -f "data/accounts.json" ]; then
+            echo "✅ accounts.json found"
+          else
+            echo "⚠️ accounts.json not found (first run)"
+          fi
           echo "=============================="
 
       - name: 🤖 Run Discord Bot
@@ -57,22 +60,26 @@ jobs:
           ADMIN_ROLE_ID: ${{ secrets.ADMIN_ROLE_ID }}
         run: |
           echo "🚀 Starting Discord Bot..."
-          echo "⏰ Will run for 5 hours 45 minutes"
-          timeout 20700 python main.py || echo "Bot stopped after timeout"
+          echo "⏰ Will run for 5 hours 45 minutes (20700 seconds)"
+          timeout 20700 python main.py || echo "✅ Bot stopped after timeout"
 
       - name: 💾 Save Data
         if: always()
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: bot-data
           path: data/
           retention-days: 90
+          overwrite: true
 
       - name: 📋 Summary
         if: always()
         run: |
           echo "=== Run Summary ==="
-          echo "Status: Completed"
+          echo "Status: ${{ job.status }}"
           echo "Data saved to artifacts"
           echo "Next run will start automatically"
+          if [ -f "data/accounts.json" ]; then
+            echo "Accounts file size: $(du -h data/accounts.json | cut -f1)"
+          fi
           echo "=================="
