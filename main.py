@@ -74,7 +74,7 @@ class MarvelBot(commands.Bot):
         await self.change_presence(
             activity=discord.Activity(
                 type=discord.ActivityType.watching,
-                name="Marvel Accounts 🎮 | GitHub Actions"
+                name="Marvel Accounts 🎮"
             )
         )
     
@@ -122,5 +122,7 @@ if __name__ == "__main__":
         print("\n⚠️ Interrupted by user")
     except Exception as e:
         print(f"\n❌ Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
     finally:
         print("🔚 Bot process ended")
